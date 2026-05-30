@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高辨识度透明背景智能轮播监控看板</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+    <style>
+        body {
+            background: transparent;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 10px;
+        }
+        /* 外层卡片依旧保持全透明，由内部元素自己带底色护航 */
+        .chart-card {
+            background: transparent;
+        }
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%2322d3ee' viewBox='0 0 24 24'><path d='M7 10l5 5 5-5z'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="chart-card w-full max-w-xl p-5 rounded-xl">
+        <div class="flex justify-between items-start mb-4 gap-4">
+            
+            <div onclick="openEditModal()" class="group cursor-pointer select-none bg-slate-950/75 backdrop-blur-md border border-white/5 px-3 py-2 rounded-xl transition-all hover:border-cyan-500/40" title="点击编辑产效数据">
+                <h2 class="text-sm font-bold text-slate-100 flex items-center gap-1.5 group-hover:text-cyan-400 transition-colors">
+                    <span class="w-1.5 h-3.5 bg-cyan-500 rounded-full inline-block animate-pulse"></span>
+                    产效流光动态监控
+                    <span class="text-[9px] bg-cyan-500/10 text-cyan-400 px-1.5 py-0.5 rounded border border-cyan-500/20 font-normal">点击编辑</span>
+                </h2>
+                <p id="carouselStatus" class="text-[11px] text-slate-300 mt-1 flex items-center gap-1.5">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping inline-block"></span>
+                    <span>自动轮播中 (5s)</span>
+                </p>
+            </div>
+            
+            <div class="flex items-center gap-2 bg-slate-950/75 backdrop-blur-md border border-white/5 p-1.5 rounded-xl">
+                <button onclick="toggleCarousel()" id="carouselBtn" class="px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-200 text-[11px] font-medium rounded border border-white/10 cursor-pointer transition-colors whitespace-nowrap">
+                    暂停轮播
+                </button>
+                <div class="relative">
+                    <select id="lineSelect" onchange="handleManualSwitch(this.value)" class="w-32 px-2.5 py-1 bg-slate-900 border border-slate-700 rounded text-xs text-cyan-400 font-bold focus:outline-none focus:border-cyan-500 transition-all cursor-pointer">
+                        </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="h-64 w-full relative">
+            <canvas id="productionChart"></canvas>
+        </div>
+    </div>
+
+    <div id="editModal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+        <div class="bg-slate-900 border border-slate-800 w-full max-w-md p-5 rounded-xl shadow-2xl text-slate-100">
+            <div class="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                <h3 id="modalTitle" class="text-sm font-bold">编辑生产线数据</h3>
+                <button onclick="closeEditModal()" class="text-slate-400 hover:text-white text-lg cursor-pointer">&times;</button>
+            </div>
+            
+            <div id="modalForm" class="space-y-3 max-h-64 overflow-y-auto pr-1">
+                </div>
+
+            <div class="flex justify-end gap-2 mt-5 border-t border-slate-800 pt-3">
+                <button onclick="closeEditModal()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded cursor-pointer">
+                    取消
+                </button>
+                <button onclick="saveData()" class="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-medium rounded shadow-lg shadow-cyan-600/20 cursor-pointer">
+                    保存并运行流光
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        Chart.register(ChartDataLabels);
+
+        const ctx = document.getElementById('productionChart').getContext('2d');
+        const lineSelect = document.getElementById('lineSelect');
+        const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+        
+        let productionChart = null;
+        let carouselInterval = null;
+        let isCarouselActive = true; 
+        const allLinesData = {};
+        const TOTAL_LINES = 21;
+
+        // 1. 初始化 21 条生产线的数据
+        for (let i = 1; i <= TOTAL_LINES; i++) {
+            const lineId = `line_${i}`;
+            if(i === 1) {
+                allLinesData[lineId] = [82, 105, 78, 91, 112, 64, 88]; 
+            } else {
+                allLinesData[lineId] = Array.from({length: 7}, () => Math.floor(Math.random() * (115 - 60 + 1)) + 60);
+            }
+
+            const option = document.createElement('option');
+            option.value = lineId;
+            option.textContent = `生产线 #${String(i).padStart(2, '0')}`;
+            lineSelect.appendChild(option);
+        }
+
+        // 2. 渐变色
+        const gradientLine = ctx.createLinearGradient(0, 0, 500, 0);
+        gradientLine.addColorStop(0, '#06b6d4'); 
+        gradientLine.addColorStop(0.5, '#3b82f6'); 
+        gradientLine.addColorStop(1, '#ec4899'); 
+
+        const gradientBg = ctx.createLinearGradient(0, 0, 0, 250);
+        gradientBg.addColorStop(0, 'rgba(6, 182, 212, 0.25)'); 
+        gradientBg.addColorStop(1, 'rgba(6, 182, 212, 0.0)');
+
+        // 3. 渲染图表方法
+        function renderChart(data) {
+            if (productionChart) {
+                productionChart.destroy();
+            }
+
+            productionChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: days,
+                    datasets: [{
+                        label: '效率',
+                        data: data,
+                        borderColor: gradientLine,
+                        borderWidth: 3,
+                        pointBackgroundColor: '#fff',
+                        pointBorderColor: '#06b6d4',
+                        pointBorderWidth: 1.5,
+                        pointRadius: 4.5,
+                        fill: true,
+                        backgroundColor: gradientBg,
+                        tension: 0.35 
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 1800,
+                        easing: 'easeInOutQuart'
+                    },
+                    scales: {
+                        // 坐标轴刻度也加上了高亮处理，即使没有大片底色，单字在浅色背景下也能通过阴影或高对比度显现
+                        x: { 
+                            grid: { color: 'rgba(255, 255, 255, 0.08)' }, 
+                            ticks: { color: '#f1f5f9', font: { size: 11, weight: '500' } } 
+                        },
+                        y: { 
+                            min: 0, 
+                            max: 120, 
+                            grid: { color: 'rgba(255, 255, 255, 0.08)' }, 
+                            ticks: { color: '#f1f5f9', font: { size: 10, weight: '500' } } 
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        datalabels: {
+                            align: 'top',
+                            distance: 5,
+                            backgroundColor: 'rgba(15, 23, 42, 0.9)', // 波动点数据框采用高浓度深色底，确保数据绝对清晰
+                            borderRadius: 4,
+                            borderWidth: 1,
+                            borderColor: 'rgba(6, 182, 212, 0.4)',
+                            padding: { top: 3, bottom: 3, left: 5, right: 5 },
+                            color: '#22d3ee', // 数据改为醒目的亮青色
+                            font: { weight: '700', size: 10 },
+                            formatter: (value) => value + '%'
+                        }
+                    }
+                }
+            });
+        }
+
+        // 4. 自动轮播管理
+        function startCarousel() {
+            if (carouselInterval) clearInterval(carouselInterval);
+            if (!isCarouselActive) return;
+
+            updateStatusUI(true, "自动轮播中 (5s)");
+
+            carouselInterval = setInterval(() => {
+                let currentIndex = lineSelect.selectedIndex;
+                let nextIndex = (currentIndex + 1) % TOTAL_LINES;
+                
+                lineSelect.selectedIndex = nextIndex;
+                renderChart(allLinesData[lineSelect.value]);
+            }, 5000);
+        }
+
+        function pauseCarousel(temporaryReason) {
+            if (carouselInterval) {
+                clearInterval(carouselInterval);
+                carouselInterval = null;
+            }
+            if (isCarouselActive) {
+                updateStatusUI(false, temporaryReason || "轮播已暂停");
+            }
+        }
+
+        function toggleCarousel() {
+            isCarouselActive = !isCarouselActive;
+            const btn = document.getElementById('carouselBtn');
+            
+            if (isCarouselActive) {
+                btn.textContent = "暂停轮播";
+                btn.className = "px-2 py-1 bg-white/5 hover:bg-white/10 text-slate-200 text-[11px] font-medium rounded border border-white/10 cursor-pointer transition-colors";
+                startCarousel();
+            } else {
+                btn.textContent = "启动轮播";
+                btn.className = "px-2 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 text-[11px] font-medium rounded border border-cyan-500/40 cursor-pointer transition-colors";
+                pauseCarousel("轮播已被手动关闭");
+            }
+        }
+
+        function handleManualSwitch(lineId) {
+            renderChart(allLinesData[lineId]);
+            if (isCarouselActive) {
+                startCarousel(); 
+            }
+        }
+
+        function updateStatusUI(isActive, text) {
+            const statusEl = document.getElementById('carouselStatus');
+            if (isActive) {
+                statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping inline-block"></span><span class="text-slate-200">${text}</span>`;
+            } else {
+                statusEl.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block"></span><span class="text-amber-400 font-medium">${text}</span>`;
+            }
+        }
+
+        // 5. 模态框逻辑
+        function openEditModal() {
+            pauseCarousel("正在编辑数据..."); 
+
+            const activeLineId = lineSelect.value;
+            const activeLineName = lineSelect.options[lineSelect.selectedIndex].text;
+            const currentData = allLinesData[activeLineId];
+
+            document.getElementById('modalTitle').textContent = `编辑【${activeLineName}】的一周产效`;
+            
+            const formContainer = document.getElementById('modalForm');
+            formContainer.innerHTML = ''; 
+
+            days.forEach((day, index) => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center justify-between bg-slate-800/60 p-2 rounded border border-slate-800';
+                row.innerHTML = `
+                    <span class="text-xs text-slate-300 font-medium">${day}产效</span>
+                    <div class="flex items-center gap-1.5">
+                        <input type="number" min="0" max="120" value="${currentData[index]}" 
+                               class="day-input w-20 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-center text-xs text-cyan-400 font-bold focus:outline-none focus:border-cyan-500" />
+                        <span class="text-xs text-slate-500">%</span>
+                    </div>
+                `;
+                formContainer.appendChild(row);
+            });
+
+            document.getElementById('editModal').classList.remove('hidden');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.add('hidden');
+            if (isCarouselActive) startCarousel(); 
+        }
+
+        function saveData() {
+            const activeLineId = lineSelect.value;
+            const inputs = document.querySelectorAll('.day-input');
+            const updatedData = [];
+
+            for (let input of inputs) {
+                let val = parseInt(input.value, 10);
+                if (isNaN(val) || val < 0 || val > 120) {
+                    alert('请输入 0 到 120 之间的有效整数！');
+                    return;
+                }
+                updatedData.push(val);
+            }
+
+            allLinesData[activeLineId] = updatedData;
+            
+            document.getElementById('editModal').classList.add('hidden');
+            renderChart(updatedData);
+            if (isCarouselActive) startCarousel(); 
+        }
+
+        // 初始化加载
+        renderChart(allLinesData['line_1']);
+        startCarousel();
+    </script>
+</body>
+</html>
